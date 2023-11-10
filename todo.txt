@@ -1,0 +1,26 @@
+value parameterized
+
+* feature
+- operator<=> 구현
+- insert_or_assign, get, operator[] 캐싱 구현
+- contains 구현
+
+std::vector<int, std::string>
+std::vector<std::type_index, std::string> - key not default constructible
+std::vector<int, std::unique_ptr<std::string>> - value not copyable
+std::vector<std::unique_ptr<int>, std::string> - key not copyable
+std::vector<std::type_info, SomeVirtualBase> - key not less comparable
+
+- copy하고 다른 객체를 clear하거나 읽었을 때 원본 객체에는 변화가 없어야 함.
+- move하면 원본 객체는 size()의 리턴값이 0어이어야 하고, clear 호출 전과 호출 후 상태가 같아야 함
+- [beg, end) 사이의 임의의 위치 pos1부터 pos2까지 값을 읽었을 때, [pos2, pos1]으로 시작해야 함
+  -> cache를 other에 카피한 뒤 pos1부터 pos2까지 읽고,
+      해당 range를 2번째로 읽었을 때 원본의 [pos1, pos2]와 일대일 대응 일치
+
+
+
+
+* lru test
+* duplication test
+* invalidate test - 중간에 사이즈를 변경해도 잘 되게
+* complex test - duplication & lru, invalidate & lru, duplication & invalidate
