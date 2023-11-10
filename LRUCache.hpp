@@ -145,7 +145,7 @@ private:
             // update cache via calling at.
             auto tmp = std::next(iter_);
             auto& key = iter_->first;
-            volatile auto res = base_->at(key);
+            base_->at(key);
             bookmark_ = iter_;
             iter_ = std::prev(tmp);
             return *(bookmark_.value());
@@ -230,7 +230,7 @@ private:
             // update cache via calling at.
             auto tmp = std::next(iter_);
             auto& key = iter_->first;
-            volatile auto res = base_->at(key);
+            base_->at(key);
             bookmark_ = iter_;
             iter_ = std::prev(tmp);
             return *(bookmark_.value());
