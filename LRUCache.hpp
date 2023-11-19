@@ -132,7 +132,7 @@ private:
 
         iterator_base() = default;
 
-        iterator_base(LRUCache& base, mapped_iterator iter)
+        iterator_base(LRUCache& base, source_iterator_type iter)
             : src_it_(iter), captured_(), base_(&base) {}
 
         reference operator*() const {
@@ -187,6 +187,10 @@ private:
             return tmp;
         }
 
+        source_iterator_type base() const noexcept {
+            return src_it_;
+        }
+
         friend bool operator==(const iterator_base& lhs,
             const iterator_base& rhs
         ) {
@@ -200,7 +204,9 @@ private:
         }
 
     protected:
-        iterator_base(LRUCache& base, mapped_iterator iter, mapped_iterator captured)
+        iterator_base(LRUCache& base, source_iterator_type iter,
+            source_iterator_type captured
+        )
             : src_it_(iter), captured_(captured), base_(&base) {}
 
         std::optional<source_iterator_type> captured() const noexcept {
@@ -558,11 +564,11 @@ public:
     }
 
     const_iterator cbegin() const {
-        return const_iterator(*this, LRU_list_.begin());
+        return const_iterator( const_cast<my_type&>(*this), LRU_list_.cbegin() );
     }
 
     const_iterator cend() const {
-        return const_iterator(*this, LRU_list_.end());
+        return const_iterator( const_cast<my_type&>(*this), LRU_list_.cend() );
     }
 
     reverse_iterator rbegin() {
@@ -602,13 +608,15 @@ public:
     template <class KeyU>
         requires std::constructible_from<key_type, KeyU>
             && std::copyable<key_type>
+            && std::is_default_constructible_v<mapped_type>
     [[maybe_unused]] mapped_type& get(KeyU&& key) {
         return get( std::forward<KeyU>(key), mapped_type() );
     }
 
     template <class KeyU>
         requires std::constructible_from<key_type, KeyU>
-        && std::copyable<key_type>
+            && std::copyable<key_type>
+            && std::is_default_constructible_v<mapped_type>
     [[maybe_unused]] const mapped_type& get(KeyU&& key) const {
         return const_cast<my_type*>(this)
             ->get(std::forward<KeyU>(key));
@@ -787,22 +795,32 @@ public:
 
     bool insert(const value_type& value)
         requires std::copyable<key_type> {
-        if (at(value.first).hit()) {
-            return false;
-        }
-
-        do_insert(value);
-
-        return true;
+        return insert(cbegin(), value);
     }
 
     bool insert(value_type&& value)
+        requires std::copyable<key_type> {
+        return insert(cbegin(), std::move(value));
+    }
+
+    bool insert(const_iterator pos, const value_type& value)
         requires std::copyable<key_type> {
         if (at(value.first).hit()) {
             return false;
         }
 
-        do_insert(std::move(value));
+        do_insert(pos, value);
+
+        return true;
+    }
+
+    bool insert(const_iterator pos, value_type&& value)
+        requires std::copyable<key_type> {
+        if (at(value.first).hit()) {
+            return false;
+        }
+
+        do_insert(pos, std::move(value));
 
         return true;
     }
@@ -855,7 +873,7 @@ public:
             return false;
         }
 
-        do_insert(std::move(tmp));
+        do_insert(begin(), std::move(tmp));
 
         return true;
     }
@@ -1022,9 +1040,11 @@ private:
     template <class ValT>
         requires std::convertible_to<ValT, value_type> 
             && std::copyable<key_type>
-    void do_insert(ValT&& val) {
-        LRU_list_.push_front(std::forward<ValT>(val));
-        map_.emplace(LRU_list_.front().first, LRU_list_.begin());
+    void do_insert(const_iterator pos, ValT&& val) {
+        const auto list_it = pos.base();
+
+        LRU_list_.insert(list_it, std::forward<ValT>(val));
+        map_.emplace( std::prev(list_it)->first, LRU_list_.begin() );
 
         adjust();
         check_invariant();
