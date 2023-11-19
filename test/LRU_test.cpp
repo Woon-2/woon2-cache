@@ -98,7 +98,7 @@ struct LRUTestInfo {
 template <class TestInfoT>
 class TLRUTestSuite : public ::testing::TestWithParam<TestInfoT> {
 public:
-
+    using info_type = TestInfoT;
 private:
 };
 
@@ -140,14 +140,29 @@ void IsLRU_impl(TestInfoT&& test_info) {
         test_info.num_cacheline
     );
 
-    std::ranges::for_each(std::forward<TestInfoT>(test_info).values, [&cache](auto&& elem) {
-        cache.insert( std::forward<decltype(elem)>(elem) );
-    });
-
-    // std::ranges::move(
-    //     test_info.values(),
-    //     std::front_inserter(cache)
-    // );
+    if constexpr ( not std::copyable< typename std::remove_cvref_t<TestInfoT>::key_type > ) {
+        // assume key_type is an unique pointer
+        std::ranges::for_each( std::forward<TestInfoT>(test_info).values,
+            [&cache](const auto& elem) {
+                cache.kggenerate(
+                    [&elem]() {
+                        auto val = *(elem.first);
+                        return std::make_unique<decltype(val)>(val);
+                    },
+                    [&elem]() {
+                        return elem.second;
+                    }
+                );
+            }
+        );
+    }
+    else {
+        std::ranges::for_each( std::forward<TestInfoT>(test_info).values,
+            [&cache](auto&& elem) {
+                cache.insert( std::forward<decltype(elem)>(elem) );
+            }
+        );
+    }
 
     LRU_test_body(cache);
 }
@@ -178,16 +193,11 @@ TEST_P(LRUTestSuiteBasic, IsLRU) {
 
 INSTANTIATE_TEST_SUITE_P(MeenyMinyMoe,
     LRUTestSuiteBasic,
-    testing::Values<TestInfoBasic>(
+    testing::Values<LRUTestSuiteBasic::info_type>(
         {
-            .values = {
-                {test_values::gen<int>(), "yeah"},
-                {test_values::gen<int>(), "fuck"},
-                {test_values::gen<int>(), "suck"},
-                {test_values::gen<int>(), "my"},
-                {test_values::gen<int>(), "dick"},
-                {test_values::gen<int>(), "girl"}
-            },
+            .values = test_values::gen<
+                LRUTestSuiteBasic::info_type::value_type
+            >(10),
             .cacheline_size = 4u,
             .num_cacheline = 0x10u
         }
@@ -199,12 +209,12 @@ INSTANTIATE_TEST_SUITE_P(MeenyMinyMoe,
 //     testing::ValuesIn(
 //         {
 //             .values = {
-//                 {1, "yeah"},
-//                 {2, "fuck"},
-//                 {3, "suck"},
-//                 {4, "my"},
-//                 {5, "dick"},
-//                 {6, "girl"}
+//                 {test_values::gen<std::unique_ptr<int>>(), "yeah"},
+//                 {test_values::gen<std::unique_ptr<int>>(), "fuck"},
+//                 {test_values::gen<std::unique_ptr<int>>(), "suck"},
+//                 {test_values::gen<std::unique_ptr<int>>(), "my"},
+//                 {test_values::gen<std::unique_ptr<int>>(), "dick"},
+//                 {test_values::gen<std::unique_ptr<int>>(), "girl"}
 //             },
 //             .cacheline_size = 4u,
 //             .num_cacheline = 0x10u
