@@ -38,7 +38,7 @@ endif()
 
 project(project_woon2_cache
     LANGUAGES CXX
-    VERSION 2023.11.10
+    VERSION 2023.11.19
     DESCRIPTION "a lightweight header-only LRU cache"
 )
 

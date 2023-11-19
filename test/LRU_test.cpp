@@ -1,6 +1,7 @@
 #include "gtest/gtest.h"
 #include "LRUCache.hpp"
 #include "random_object.hpp"
+#include "test_values.hpp"
 
 #include <ranges>
 #include <iterator>
@@ -15,8 +16,14 @@ void LRU_test_body(CacheT&& cache) {
         0, cache.size()
     );
 
+    // read random range in copied cache and let n the range's size,
+    // then reading first n elements from the copied cache in reverse order
+    // will yield equal result with reading from original range.
+
+    // make copy
     auto copied = cache;
 
+    // select range
     auto random_idx_first = dist(re);
     auto random_idx_last = dist(re);
 
@@ -24,26 +31,28 @@ void LRU_test_body(CacheT&& cache) {
         std::swap(random_idx_first, random_idx_last);
     }
 
+    // calculate n
     const auto range_length = random_idx_last - random_idx_first;
 
     auto it_first = std::next(copied.begin(), random_idx_first);
     const auto it_last = std::next(it_first, range_length);
 
+    // actually read values in the range
     for (; it_first != it_last; ++it_first) {
         volatile const auto& tmp = *it_first;
     }
 
-    std::ranges::for_each_n(copied.begin(), range_length,
-        [](volatile const auto& elem) {}
-    );
-
+    // test first n elements from copied cache in reverse order
+    // with the original range from original cache.
     auto src_first = std::next(
         std::forward<CacheT>(cache).begin(),
         random_idx_first
     );
     const auto src_last = std::next(src_first, range_length);
 
-    auto read_first = copied.begin();
+    auto read_first = copied.make_reverse_iterator(
+        std::next(copied.begin(), range_length)
+    );
 
     for (; src_first != src_last; ++src_first, ++read_first) {
         EXPECT_EQ(*src_first, *read_first);
@@ -56,9 +65,34 @@ struct LRUTestInfo {
     using mapped_type = MappedT;
     using value_type = std::pair<const key_type, mapped_type>;
 
+    // LRUTestInfo() = default;
+
+    // LRUTestInfo(std::size_t cacheline_size,
+    //     std::size_t num_cacheline,
+    //     std::vector<value_type> values
+    // ) : values(values), cacheline_size(cacheline_size),
+    //     num_cacheline(num_cacheline) {}
+
+    // ~LRUTestInfo() = default;
+
+    // LRUTestInfo(const LRUTestInfo& other) noexcept
+    //     : values(std::move( const_cast<LRUTestInfo&>(other).values )),
+    //     cacheline_size(other.cacheline_size),
+    //     num_cacheline(other.num_cacheline) {}
+
+    // LRUTestInfo& operator=(const LRUTestInfo& other) noexcept {
+    //     LRUTestInfo(other).swap(*this);
+    // }
+
+    // void swap(LRUTestInfo& other) noexcept {
+    //     std::swap(values, other.values);
+    //     std::swap(cacheline_size, other.cacheline_size);
+    //     std::swap(num_cacheline, other.num_cacheline);
+    // }
+
+    std::vector<value_type> values;
     std::size_t cacheline_size;
     std::size_t num_cacheline;
-    std::vector<value_type> values;
 };
 
 template <class TestInfoT>
@@ -81,23 +115,32 @@ using TestInfoKeyNotCopyable
 
 using TestInfoValueNotCopyable
     = LRUTestInfo<int, std::unique_ptr<std::string>>;
-    
-using TestInfoKeyNotLessComparable
-    = LRUTestInfo<std::type_info, std::string>;
 
 using LRUTestSuiteBasic = TLRUTestSuite<TestInfoBasic>;
 
+using LRUTestSuiteKeyNotDefaultConstructible
+    = TLRUTestSuite<TestInfoKeyNotDefaultConstructible>;
+
+using LRUTestSuiteValueNotDefaultConstructible
+    = TLRUTestSuite<TestInfoValueNotDefaultConstructible>;
+
+using LRUTestSuiteKeyNotCopyable
+    = TLRUTestSuite<TestInfoKeyNotCopyable>;
+
+using LRUTestSuiteValueNotCopyable
+    = TLRUTestSuite<TestInfoValueNotCopyable>;
+
 template <class TestInfoT>
-void IsLRU_impl(const TestInfoT& test_info) {
-    using key_type = typename TestInfoT::key_type;
-    using mapped_type = typename TestInfoT::mapped_type;
+void IsLRU_impl(TestInfoT&& test_info) {
+    using key_type = typename std::remove_cvref_t<TestInfoT>::key_type;
+    using mapped_type = typename std::remove_cvref_t<TestInfoT>::mapped_type;
 
     auto cache = LRUCache<key_type, mapped_type>(
         test_info.cacheline_size,
         test_info.num_cacheline
     );
 
-    std::ranges::for_each(test_info.values, [&cache](auto&& elem) {
+    std::ranges::for_each(std::forward<TestInfoT>(test_info).values, [&cache](auto&& elem) {
         cache.insert( std::forward<decltype(elem)>(elem) );
     });
 
@@ -109,28 +152,65 @@ void IsLRU_impl(const TestInfoT& test_info) {
     LRU_test_body(cache);
 }
 
+#define IsLRUBody() \
+    const auto& test_info = GetParam();  \
+    IsLRU_impl(test_info)
+
 TEST_P(LRUTestSuiteBasic, IsLRU) {
-    const auto& test_info = GetParam();
-    IsLRU_impl(test_info);
+    IsLRUBody();
 }
+
+// TEST_P(LRUTestSuiteKeyNotDefaultConstructible, IsLRU) {
+//     IsLRUBody();
+// }
+
+// TEST_P(LRUTestSuiteValueNotDefaultConstructible, IsLRU) {
+//     IsLRUBody();
+// }
+
+// TEST_P(LRUTestSuiteKeyNotCopyable, IsLRU) {
+//     IsLRUBody();
+// }
+
+// TEST_P(LRUTestSuiteValueNotCopyable, IsLRU) {
+//     IsLRUBody();
+// }
 
 INSTANTIATE_TEST_SUITE_P(MeenyMinyMoe,
     LRUTestSuiteBasic,
     testing::Values<TestInfoBasic>(
         {
-            .cacheline_size = 4u,
-            .num_cacheline = 0x10u,
             .values = {
-                {1, "yeah"},
-                {2, "fuck"},
-                {3, "suck"},
-                {4, "my"},
-                {5, "dick"},
-                {6, "girl"}
-            }
+                {test_values::gen<int>(), "yeah"},
+                {test_values::gen<int>(), "fuck"},
+                {test_values::gen<int>(), "suck"},
+                {test_values::gen<int>(), "my"},
+                {test_values::gen<int>(), "dick"},
+                {test_values::gen<int>(), "girl"}
+            },
+            .cacheline_size = 4u,
+            .num_cacheline = 0x10u
         }
     )
 );
+
+// INSTANTIATE_TEST_SUITE_P(MeenyMinyMoexx,
+//     LRUTestSuiteKeyNotCopyable,
+//     testing::ValuesIn(
+//         {
+//             .values = {
+//                 {1, "yeah"},
+//                 {2, "fuck"},
+//                 {3, "suck"},
+//                 {4, "my"},
+//                 {5, "dick"},
+//                 {6, "girl"}
+//             },
+//             .cacheline_size = 4u,
+//             .num_cacheline = 0x10u
+//         }
+//     )
+// );
 
 TEST(LRUTestSuite, LRUTest) {
     constexpr auto cnt = 0x100;

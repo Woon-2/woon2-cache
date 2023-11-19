@@ -14,6 +14,7 @@
 #include <memory_resource>
 #include <type_traits>
 #include <optional>
+#include <concepts>
 
 template <class Key, class T, class Hash = std::hash<Key>,
     class KeyEqual = std::equal_to<Key>,
@@ -118,174 +119,290 @@ private:
         std::optional<std::reference_wrapper<mapped_type>> data_;
     };
 
-    class iterator {
+    template <std::bidirectional_iterator SrcIt>
+    class iterator_base {
     public:
-        friend class my_type::const_iterator;
-
-        using iterator_type = mapped_iterator;
-        using difference_type = std::ptrdiff_t;
-        using value_type = std::iter_value_t<iterator_type>;
-        using reference = std::iter_reference_t<iterator_type>;
-        using pointer = std::add_pointer_t<reference>;
+        using source_iterator_type = SrcIt;
+        using difference_type = std::iter_difference_t<source_iterator_type>;
+        using value_type = std::iter_value_t<source_iterator_type>;
+        using reference = std::iter_reference_t<source_iterator_type>;
+        using pointer = typename std::iterator_traits<source_iterator_type>
+            ::pointer;
         using iterator_category = std::bidirectional_iterator_tag;
 
-        iterator() = default;
+        iterator_base() = default;
 
-        iterator(LRUCache& base, mapped_iterator iter)
-            : iter_(iter), bookmark_(), base_(&base) {}
+        iterator_base(LRUCache& base, mapped_iterator iter)
+            : src_it_(iter), captured_(), base_(&base) {}
 
         reference operator*() const {
             // guarantee the iterator returns the same reference
             // when it's read more than once.
-            if (bookmark_.has_value()) {
-                return *(bookmark_.value());
+            if (captured_.has_value()) {
+                return *(captured_.value());
             }
 
             // since it's a read operation,
             // update cache via calling at.
-            auto tmp = std::next(iter_);
-            auto& key = iter_->first;
+            auto tmp = std::next(src_it_);
+            auto& key = src_it_->first;
             base_->at(key);
-            bookmark_ = iter_;
-            iter_ = std::prev(tmp);
-            return *(bookmark_.value());
+            captured_ = src_it_;
+            src_it_ = std::prev(tmp);
+            return *(captured_.value());
         }
 
         pointer operator->() const {
-            return &(this->operator*());
+            return std::pointer_traits<pointer>::pointer_to(**this);
         }
 
-        iterator& operator++() {
-            ++iter_;
-            bookmark_ = {};
+        iterator_base& operator++() {
+            ++src_it_;
+            captured_.reset();
             return *this;
         }
 
-        iterator operator++(int) {
-            iterator tmp = *this;
+        iterator_base operator++(int) {
+            iterator_base tmp = *this;
             ++(*this);
             return tmp;
         }
 
-        iterator& operator--() {
-            --iter_;
-            bookmark_ = {};
+        iterator_base& operator--() {
+            // if it had been read just before call of this function,
+            // the previous iterator's relative position has been advanced.
+            // e.g. read "3": [1, 2, 3, 4, 5] -> [3, 1, 2, 4, 5]
+            // so invalidate the bookmark and don't update the iterator in this case.
+            if (captured_.has_value()) {
+                captured_.reset();
+                return *this;
+            }
+            --src_it_;
             return *this;
         }
 
-        iterator operator--(int) {
+        iterator_base operator--(int) {
             iterator tmp = *this;
             --(*this);
             return tmp;
         }
 
-        friend bool operator==(const iterator& lhs,
-            const iterator& rhs
-            ) {
-            return lhs.iter_ == rhs.iter_;
+        friend bool operator==(const iterator_base& lhs,
+            const iterator_base& rhs
+        ) {
+            return lhs.src_it_ == rhs.src_it_;
         }
 
-        friend bool operator!=(const iterator& lhs,
-            const iterator& rhs
-            ) {
+        friend bool operator!=(const iterator_base& lhs,
+            const iterator_base& rhs
+        ) {
             return !(lhs == rhs);
         }
 
+    protected:
+        iterator_base(LRUCache& base, mapped_iterator iter, mapped_iterator captured)
+            : src_it_(iter), captured_(captured), base_(&base) {}
 
-    private:
-        static reference get_raw(const iterator& iter) {
-            return *iter.iter_;
+        std::optional<source_iterator_type> captured() const noexcept {
+            return captured_;
         }
 
-        mutable iterator_type iter_;
-        mutable std::optional<iterator_type> bookmark_;
+        void set_captured( source_iterator_type it ) const {
+            captured_ = it;
+        }
+
+    private:
+        mutable source_iterator_type src_it_;
+        mutable std::optional<source_iterator_type> captured_;
         mutable LRUCache* base_;
     };
 
-    class const_iterator {
+    template <class SrcIt>
+    class reverse_iterator_base {
     public:
-        using const_iterator_type = mapped_const_iterator;
-        using difference_type = std::ptrdiff_t;
-        using value_type = std::iter_value_t<const_iterator_type>;
-        using const_reference = std::iter_reference_t<const_iterator_type>;
-        using const_pointer = std::add_pointer_t<const_reference>;
-        using iterator_category = std::bidirectional_iterator_tag;
+        using iterator_type = SrcIt;
+        using iterator_category = typename std::iterator_traits<iterator_type>
+            ::iterator_category;
+        using value_type = std::iter_value_t<iterator_type>;
+        using difference_type = std::iter_difference_t<iterator_type>;
+        using pointer = typename std::iterator_traits<iterator_type>
+            ::pointer;
+        using reference = std::iter_reference_t<iterator_type>;
 
-        const_iterator() = default;
+        reverse_iterator_base() = default;
 
-        const_iterator(const LRUCache& base, mapped_const_iterator iter)
-            : iter_(iter), bookmark_(), base_(&base) {}
+        reverse_iterator_base(iterator_type base)
+            : base_(base) {}
 
-        const_iterator(const iterator& iter)
-            : iter_(iter.iter_), base_(iter.base_) {}
+        iterator_type base() const {
+            return base_;
+        }
 
-        const_reference operator*() const {
-            // guarantee the iterator returns the same reference
-            // when it's read more than once.
-            if (bookmark_.has_value()) {
-                return *(bookmark_.value());
+        reference operator*() const {
+            if (auto captured = base_.captured();
+                captured.has_value()
+            ) {
+                return *(captured.value());
             }
 
-            // since it's a read operation,
-            // update cache via calling at.
-            auto tmp = std::next(iter_);
-            auto& key = iter_->first;
-            base_->at(key);
-            bookmark_ = iter_;
-            iter_ = std::prev(tmp);
-            return *(bookmark_.value());
+            auto tmp = base_;
+            auto& ret = *(--tmp);
+            assert( tmp.captured().has_value() );
+            base_.set_captured( tmp.captured().value() );
+
+            return ret;
         }
 
-        const_pointer operator->() const {
-            return &(this->operator*());
+        pointer operator->() const
+            requires std::is_pointer_v<iterator_type>
+                || requires (const iterator_type i) { i.operator->(); } {
+            auto tmp = base_;
+            return (--tmp).operator->();
         }
 
-        const_iterator& operator++() {
-            ++iter_;
+        reverse_iterator_base& operator++() {
+            --base_;
             return *this;
         }
 
-        const_iterator operator++(int) {
-            const_iterator tmp = *this;
-            ++(*this);
-            return tmp;
-        }
-
-        const_iterator& operator--() {
-            --iter_;
-            return *this;
-        }
-
-        const_iterator operator--(int) {
-            const_iterator tmp = *this;
+        reverse_iterator_base operator++(int) {
+            auto ret = base_;
             --(*this);
-            return tmp;
+            return ret;
         }
 
-        friend bool operator==(const const_iterator& lhs,
-            const const_iterator& rhs
-            ) {
-            return lhs.iter_ == rhs.iter_;
+        reverse_iterator_base& operator--() {
+            ++base_;
+            return *this;
+        }
+        
+        reverse_iterator_base operator--(int) {
+            auto ret = base_;
+            ++(*this);
+            return ret;
         }
 
-        friend bool operator!=(const const_iterator& lhs,
-            const const_iterator& rhs
-            ) {
+        friend bool operator==(const reverse_iterator_base& lhs,
+            const reverse_iterator_base& rhs
+        ) {
+            return lhs.base_ == rhs.base_;
+        }
+
+        friend bool operator!=(const reverse_iterator_base& lhs,
+            const reverse_iterator_base& rhs
+        ) {
             return !(lhs == rhs);
         }
 
-
     private:
-        static const_reference get_raw(const const_iterator& iter) {
-            return *iter.iter_;
+        void swap(reverse_iterator_base& other) noexcept (
+            noexcept( std::is_nothrow_swappable<iterator>::value )
+        ) {
+            std::swap(base_, other.base_);
         }
 
-        mutable const_iterator_type iter_;
-        mutable std::optional<const_iterator_type> bookmark_;
-        const LRUCache* base_;
+        iterator_type base_;
     };
 
 public:
+    class iterator : public iterator_base<mapped_iterator> {
+    public:
+        friend class LRUCache::const_iterator;
+        template <class>
+        friend class my_type::reverse_iterator_base;
+
+        using parent = iterator_base<mapped_iterator>;
+
+        using difference_type = typename parent::difference_type;
+        using value_type = typename parent::value_type;
+        using reference = typename parent::reference;
+        using pointer = typename parent::pointer;
+        using iterator_category = typename parent::iterator_category;
+
+        iterator() = default;
+
+        iterator(LRUCache& base, mapped_iterator iter)
+            : iterator_base<mapped_iterator>(base, iter) {}
+    };
+
+    class const_iterator : public iterator_base<mapped_const_iterator> {
+    public:
+        template <class>
+        friend class my_type::reverse_iterator_base;
+
+        using parent = iterator_base<mapped_const_iterator>;
+
+        using difference_type = typename parent::difference_type;
+        using value_type = typename parent::value_type;
+        using reference = typename parent::reference;
+        using pointer = typename parent::pointer;
+        using iterator_category = typename parent::iterator_category;
+
+        const_iterator() = default;
+
+        const_iterator(LRUCache& base, mapped_const_iterator iter)
+            : iterator_base<mapped_const_iterator>(base, iter) {}
+
+        const_iterator(iterator it)
+            : iterator_base<mapped_const_iterator>(it.base_, it.src_it_, it.captured_) {}
+    };
+
+    class reverse_iterator : public reverse_iterator_base<iterator> {
+    public:
+        using parent = reverse_iterator_base<iterator>;
+
+        using iterator_type = typename parent::iterator_type;
+        using difference_type = typename parent::difference_type;
+        using value_type = typename parent::value_type;
+        using reference = typename parent::reference;
+        using pointer = typename parent::pointer;
+        using iterator_category = typename parent::iterator_category;
+
+        reverse_iterator() = default;
+
+        reverse_iterator(iterator_type base)
+            : reverse_iterator_base<iterator>(base) {}
+
+        template <class OtherIt>
+            requires std::convertible_to<const OtherIt&, reverse_iterator> 
+        reverse_iterator(const OtherIt& other_it)
+            : reverse_iterator_base<iterator>( other_it.base() ) {}
+
+        template <class OtherIt>
+            requires std::convertible_to<const OtherIt&, reverse_iterator> 
+        reverse_iterator& operator=(const OtherIt& other_it) {
+            static_cast<reverse_iterator>(other_it).swap(*this);
+        }
+    };
+
+    class const_reverse_iterator : public reverse_iterator_base<const_iterator> {
+    public:
+        using parent = reverse_iterator_base<const_reverse_iterator>;
+
+        using iterator_type = typename parent::iterator_type;
+        using difference_type = typename parent::difference_type;
+        using value_type = typename parent::value_type;
+        using reference = typename parent::reference;
+        using pointer = typename parent::pointer;
+        using iterator_category = typename parent::iterator_category;
+
+        const_reverse_iterator() = default;
+
+        const_reverse_iterator(iterator_type base)
+            : reverse_iterator_base<const_iterator>(base) {}
+
+        template <class OtherIt>
+            requires std::convertible_to<const OtherIt&, const_reverse_iterator> 
+        const_reverse_iterator(const OtherIt& other_it)
+            : reverse_iterator_base<const_iterator>( other_it.base() ) {}
+
+        template <class OtherIt>
+            requires std::convertible_to<const OtherIt&, const_reverse_iterator> 
+        const_reverse_iterator& operator=(const OtherIt& other_it) {
+            static_cast<const_reverse_iterator>(other_it).swap(*this);
+        }
+    };
+
     static constexpr size_type default_cacheline_size = 0x04;
     static constexpr size_type default_num_cacheline = 0x0100;
 
@@ -448,6 +565,30 @@ public:
         return const_iterator(*this, LRU_list_.end());
     }
 
+    reverse_iterator rbegin() {
+        return reverse_iterator(begin());
+    }
+
+    reverse_iterator rend() {
+        return reverse_iterator(end());
+    }
+
+    const_reverse_iterator rbegin() const {
+        return const_reverse_iterator(cbegin());
+    }
+
+    const_reverse_iterator rend() const {
+        return const_reverse_iterator(cend());
+    }
+
+    static reverse_iterator make_reverse_iterator(iterator it) {
+        return reverse_iterator(it);
+    }
+
+    static const_reverse_iterator make_reverse_iterator(const_iterator it) {
+        return const_reverse_iterator(it);
+    }
+
     [[maybe_unused]] cache_result at(const key_type& key) {
         return at_impl(key);
     }
@@ -458,81 +599,180 @@ public:
         return at_impl(key);
     }
 
-    // xxxxxxxxxxxxxxxxxxx
     template <class KeyU>
+        requires std::constructible_from<key_type, KeyU>
+            && std::copyable<key_type>
     [[maybe_unused]] mapped_type& get(KeyU&& key) {
         return get( std::forward<KeyU>(key), mapped_type() );
     }
 
     template <class KeyU>
+        requires std::constructible_from<key_type, KeyU>
+        && std::copyable<key_type>
     [[maybe_unused]] const mapped_type& get(KeyU&& key) const {
         return const_cast<my_type*>(this)
             ->get(std::forward<KeyU>(key));
     }
 
     template <class KeyU, class MappedT>
+        requires std::constructible_from<key_type, KeyU>
+            && std::constructible_from<mapped_type, MappedT>
+            && std::copyable<key_type>
     [[maybe_unused]] mapped_type& get( KeyU&& key,
-        MappedT&& mapped_value
+        MappedT&& newVal
     ) {
-        return get( std::forward<KeyU>(key), [](auto&& mv) { 
-            return std::forward<decltype(mv)>(mv); 
-        });
-    }
-
-    template <class KeyU, class MappedT>
-    [[maybe_unused]] const mapped_type& get( KeyU&& key,
-        MappedT&& mapped_value
-    ) const {
-        return const_cast<my_type*>(this)
-            ->get( std::forward<KeyU>(key),
-                std::forward<MappedT>(mapped_value)
-            );
-    }
-
-    template <class KeyU, class Gen, class ... Args>
-    [[maybe_unused]] mapped_type& get(
-        KeyU&& key, Gen&& gen, Args&& ... args
-    ) {
-        if ( auto cache_res = at( std::forward<KeyU>(key) );
-            cache_res.hit()
-        ) {
+        if ( auto cache_res = at(key); cache_res.hit() ) {
             return cache_res.value();
         }
 
-        do_insert( std::invoke(
-            std::forward<Gen>(gen), std::forward<Args>(args)...
-        ) );
+        do_emplace(std::forward<KeyU>(key),
+            std::forward<MappedT>(newVal)
+        );
+    }
+
+    template <class KeyU, class MappedT>
+        requires std::constructible_from<key_type, KeyU>
+            && std::constructible_from<mapped_type, MappedT>
+            && std::copyable<key_type>
+    [[maybe_unused]] const mapped_type& get( KeyU&& key,
+        MappedT&& newVal
+    ) const {
+        return const_cast<my_type*>(this)
+            ->get( std::forward<KeyU>(key),
+                std::forward<MappedT>(newVal)
+            );
+    }
+
+    template <class KeyU, class ValGen, class ... Args>
+        requires std::constructible_from<key_type, KeyU>
+            && std::invocable<ValGen, Args...>
+            && std::copyable<key_type>
+    [[maybe_unused]] mapped_type& get( KeyU&& key,
+        ValGen&& gen, Args&& ... args
+    ) {
+        if ( auto cache_res = at(key); cache_res.hit() ) {
+            return cache_res.value();
+        }
+
+        do_generate([key = std::forward<KeyU>(key)]() { 
+            return std::forward<KeyU>(key);
+        }, std::forward<ValGen>(gen), std::forward<Args>(args)...
+        );
 
         return LRU_list_.front().second;
     }
 
-    template <class KeyU, class Gen, class ... Args>
-    [[maybe_unused]] const mapped_type& get(
-        KeyU&& key, Gen&& gen, Args&& ... args
+    template <class KeyU, class ValGen, class ... Args>
+        requires std::constructible_from<key_type, KeyU>
+            && std::invocable<ValGen, Args...>
+            && std::copyable<key_type>
+    [[maybe_unused]] const mapped_type& get( KeyU&& key,
+        ValGen&& gen, Args&& ... args
     ) const {
         return const_cast<my_type*>(this)->get(
-            std::forward<KeyU>(key), std::forward<Gen>(gen),
+            std::forward<KeyU>(key),
+            std::forward<ValGen>(gen),
             std::forward<Args>(args)...
         );
     }
 
-    [[maybe_unused]] cache_result operator[](const key_type& key) {
+    template <class KeyGen, class ValGen, class ... Args>
+        requires std::invocable<KeyGen>
+            && std::constructible_from< key_type, std::invoke_result_t<KeyGen> >
+            && std::invocable<ValGen, Args...>
+            && std::constructible_from< mapped_type, std::invoke_result_t<ValGen, Args...> >
+    [[maybe_unused]] mapped_type& kgget(KeyGen&& key_gen,
+        ValGen&& val_gen, Args&& ... args
+    ) {
+        auto key = std::invoke(key_gen);
+
+        if ( auto cache_res = at(key); cache_res.hit() ) {
+            return cache_res.value();
+        }
+
+        do_generate(std::forward<KeyGen>(key_gen),
+            std::forward<ValGen>(val_gen),
+            std::forward<Args>(args)...
+        );
+
+        return LRU_list_.front().second;
+    }
+
+    template <class KeyGen, class ValGen, class ... Args>
+        requires std::invocable<KeyGen>
+            && std::constructible_from< key_type, std::invoke_result_t<KeyGen> >
+            && std::invocable<ValGen, Args...>
+            && std::constructible_from< mapped_type, std::invoke_result_t<ValGen, Args...> >
+    [[maybe_unused]] const mapped_type& kgget(KeyGen&& key_gen,
+        ValGen&& val_gen, Args&& ... args
+    ) const {
+        return const_cast<my_type*>(this)->kgget(
+            std::forward<KeyGen>(key_gen),
+            std::forward<ValGen>(val_gen),
+            std::forward<Args>(args)...
+        );
+    }
+
+    template <class KeyU, class ValGen, class ... Args>
+        requires std::constructible_from<key_type, KeyU>
+            && std::invocable<ValGen, Args...>
+            && std::copyable<key_type>
+    [[maybe_unused]] bool generate( KeyU&& key,
+        ValGen&& gen, Args&& ... args
+    ) {
+        if ( auto cache_res = at(key); cache_res.hit() ) {
+            return false;
+        }
+
+        do_generate(std::forward<KeyU>(key),
+            std::forward<ValGen>(gen),
+            std::forward<Args>(args)...
+        );
+
+        return true;
+    }
+
+    template <class KeyGen, class ValGen, class ... Args>
+        requires std::invocable<KeyGen>
+            && std::constructible_from< key_type, std::invoke_result_t<KeyGen> >
+            && std::invocable<ValGen, Args...>
+            && std::constructible_from< mapped_type, std::invoke_result_t<ValGen, Args...> >
+    [[maybe_unused]] bool kggenerate(KeyGen&& key_gen,
+        ValGen&& val_gen, Args&& ... args
+    ) {
+        auto key = std::invoke(key_gen);
+
+        if ( auto cache_res = at(key); cache_res.hit() ) {
+            return false;
+        }
+
+        do_generate(std::forward<KeyGen>(key_gen),
+            std::forward<ValGen>(val_gen),
+            std::forward<Args>(args)...
+        );
+
+        return true;
+    }
+
+    [[maybe_unused]] cache_result operator[](const key_type& key)
+        requires std::copyable<key_type> {
         return get(key);
     }
 
-    [[maybe_unused]] cache_result operator[](key_type&& key) {
+    [[maybe_unused]] cache_result operator[](key_type&& key)
+        requires std::copyable<key_type> {
         return get(std::move(key));
     }
 
     [[maybe_unused]] const cache_result operator[](
         const key_type& key
-    ) const {
+    ) const requires std::copyable<key_type> {
         return const_cast<my_type*>(this)->operator[](key);
     }
 
     [[maybe_unused]] const cache_result operator[](
         key_type&& key
-    ) const {
+    ) const requires std::copyable<key_type> {
         return const_cast<my_type*>(this)
             ->operator[](std::move(key));
     }
@@ -545,33 +785,33 @@ public:
         return cacheline_size() * num_cacheline();
     }
 
-    std::pair<mapped_iterator, bool> insert(
-        const value_type& value
-    ) {
+    bool insert(const value_type& value)
+        requires std::copyable<key_type> {
         if (at(value.first).hit()) {
-            return { LRU_list_.begin(), false };
+            return false;
         }
 
         do_insert(value);
 
-        return { LRU_list_.begin(), true };
+        return true;
     }
 
-    std::pair<mapped_iterator, bool> insert(
-        value_type&& value
-    ) {
+    bool insert(value_type&& value)
+        requires std::copyable<key_type> {
         if (at(value.first).hit()) {
-            return { LRU_list_.begin(), false };
+            return false;
         }
 
         do_insert(std::move(value));
 
-        return { LRU_list_.begin(), true };
+        return true;
     }
 
     template <class MappedT>
-    std::pair<mapped_iterator, bool> insert_or_assign(
-        const key_type& key, MappedT&& mapped_value
+        requires std::constructible_from<mapped_type, MappedT>
+            && std::copyable<key_type>
+    bool insert_or_assign( const key_type& key, 
+        MappedT&& mapped_value
     ) {
         return insert_or_assign_impl( key,
             std::forward<MappedT>(mapped_value)
@@ -579,8 +819,10 @@ public:
     }
 
     template <class MappedT>
-    std::pair<mapped_iterator, bool> insert_or_assign(
-        key_type&& key, MappedT&& mapped_value
+        requires std::constructible_from<mapped_type, MappedT>
+            && std::copyable<key_type>
+    bool insert_or_assign( key_type&& key,
+        MappedT&& mapped_value
     ) {
         return insert_or_assign_impl( std::move(key),
             std::forward<MappedT>(mapped_value)
@@ -588,32 +830,34 @@ public:
     }
 
     template <class KeyU, class ... Args>
-    std::pair<mapped_iterator, bool> try_emplace(
-        KeyU&& key, Args&& ... args
-    ) {
+        requires std::constructible_from<key_type, KeyU>
+            && std::copyable<key_type>
+            && std::constructible_from<mapped_type, Args...>
+    bool try_emplace( KeyU&& key, Args&& ... args ) {
         if (at(key).hit()) {
-            return { LRU_list_.begin(), false };
+            return false;
         }
 
         do_emplace(std::forward<KeyU>(key),
             std::forward<Args>(args)...
         );
 
-        return { LRU_list_.begin(), true };
+        return true;
     }
 
     template <class ... Args>
-    std::pair<mapped_iterator, bool> emplace(Args&& ... args) {
+        requires std::constructible_from<value_type, Args...>
+    bool emplace(Args&& ... args) {
         auto tmp = value_type(std::forward<Args>(args)...);
         auto& key = tmp.first;
 
         if (at(key).hit()) {
-            return { LRU_list_.begin(), false };
+            return false;
         }
 
         do_insert(std::move(tmp));
 
-        return { LRU_list_.begin(), true };
+        return true;
     }
 
     size_type cacheline_size() const noexcept {
@@ -695,10 +939,6 @@ public:
         return at(key).hit();
     }
 
-    bool contains(key_type&& key) const {
-        return at( std::move(key) ).hit();
-    }
-
     void swap(my_type& other) noexcept(
         noexcept(
             std::allocator_traits<
@@ -753,15 +993,6 @@ private:
         return LRU_list_.front().second;
     }
 
-    std::optional<std::reference_wrapper<mapped_type>>
-        get_raw(const key_type& key) const {
-        if (!map_.contains(key)) {
-            return {};
-        }
-
-        return map_.at(key);
-    }
-
 #ifdef LRU_CACHE_CHECK_INVARIANT
     void check_invariant() const {
         assert(LRU_list_.size() == map_.size());
@@ -778,6 +1009,8 @@ private:
 #endif
 
     template <class ... Args>
+        requires std::constructible_from<value_type, Args...> 
+            && std::copyable<key_type>
     void do_emplace(Args&& ... args) {
         LRU_list_.emplace_front(std::forward<Args>(args)...);
         map_.emplace(LRU_list_.front().first, LRU_list_.begin());
@@ -787,6 +1020,8 @@ private:
     }
 
     template <class ValT>
+        requires std::convertible_to<ValT, value_type> 
+            && std::copyable<key_type>
     void do_insert(ValT&& val) {
         LRU_list_.push_front(std::forward<ValT>(val));
         map_.emplace(LRU_list_.front().first, LRU_list_.begin());
@@ -795,20 +1030,43 @@ private:
         check_invariant();
     }
 
+    template <class KeyGen, class ValGen, class ... Args>
+        requires std::invocable<KeyGen>
+            && std::constructible_from< key_type, std::invoke_result_t<KeyGen> >
+            && std::invocable<ValGen, Args...>
+            && std::constructible_from< mapped_type, std::invoke_result_t<ValGen, Args...> >
+    void do_generate(KeyGen&& key_gen,
+        ValGen&& val_gen, Args&& ... args
+    ) {
+        LRU_list_.emplace_front(
+            std::invoke(key_gen),
+            std::invoke(std::forward<ValGen>(val_gen),
+                std::forward<Args>(args)...
+            )
+        );
+        map_.emplace(std::invoke(key_gen), LRU_list_.begin());
+
+        adjust();
+        check_invariant();
+    }
+
     template <class KeyU, class MappedT>
-    std::pair<mapped_iterator, bool> insert_or_assign_impl(
+        requires std::constructible_from<key_type, KeyU>
+            && std::constructible_from<mapped_type, MappedT>
+            && std::copyable<key_type>
+    bool insert_or_assign_impl(
         KeyU&& key, MappedT&& mapped_value
     ) {
         if (auto cacheRes = at(key); cacheRes.hit()) {
             *cacheRes = std::forward<MappedT>(mapped_value);
-            return { LRU_list_.begin(), false };
+            return false;
         }
 
         do_emplace( std::forward<KeyU>(key),
             std::forward<MappedT>(mapped_value)
         );
 
-        return { LRU_list_.begin(), true };
+        return true;
     }
 
     void reserve_map() {
@@ -826,7 +1084,7 @@ private:
     }
 
     mutable list_type LRU_list_;
-    map_type map_;
+    mutable map_type map_;
     size_type cacheline_size_;
     size_type num_cacheline_;
 };

@@ -5,6 +5,8 @@ add_executable(woon2cache_test)
 target_sources(woon2cache_test
 PRIVATE
     "${PROJECT_SOURCE_DIR}/LRUCache.hpp"
+    random_object.hpp
+    test_values.hpp
     LRU_test.cpp
     rule_of_five_test.cpp
 )
