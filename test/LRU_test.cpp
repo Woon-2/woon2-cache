@@ -191,36 +191,31 @@ TEST_P(LRUTestSuiteBasic, IsLRU) {
 //     IsLRUBody();
 // }
 
+template <class TestInfoT>
+auto make_test_infos(std::size_t num_tests, std::size_t num_values,
+    std::size_t cacheline_size, std::size_t num_cacheline) {
+    using value_type = typename TestInfoT::value_type;
+
+    auto ret = std::vector<TestInfoT>();
+    ret.reserve(num_tests);
+
+    while (num_tests--) {
+        ret.emplace_back(
+            /* .values = */test_values::gen<value_type>(num_values),
+            /* .cacheline_size = */cacheline_size,
+            /* .num_cacheline = */num_cacheline
+        );
+    }
+
+    return ret;
+}
+
 INSTANTIATE_TEST_SUITE_P(MeenyMinyMoe,
     LRUTestSuiteBasic,
-    testing::Values<LRUTestSuiteBasic::info_type>(
-        {
-            .values = test_values::gen<
-                LRUTestSuiteBasic::info_type::value_type
-            >(10),
-            .cacheline_size = 4u,
-            .num_cacheline = 0x10u
-        }
-    )
+    testing::ValuesIn( make_test_infos<
+        LRUTestSuiteBasic::info_type
+    >(1u, 12u, 0x4u, 0x10u) )
 );
-
-// INSTANTIATE_TEST_SUITE_P(MeenyMinyMoexx,
-//     LRUTestSuiteKeyNotCopyable,
-//     testing::ValuesIn(
-//         {
-//             .values = {
-//                 {test_values::gen<std::unique_ptr<int>>(), "yeah"},
-//                 {test_values::gen<std::unique_ptr<int>>(), "fuck"},
-//                 {test_values::gen<std::unique_ptr<int>>(), "suck"},
-//                 {test_values::gen<std::unique_ptr<int>>(), "my"},
-//                 {test_values::gen<std::unique_ptr<int>>(), "dick"},
-//                 {test_values::gen<std::unique_ptr<int>>(), "girl"}
-//             },
-//             .cacheline_size = 4u,
-//             .num_cacheline = 0x10u
-//         }
-//     )
-// );
 
 TEST(LRUTestSuite, LRUTest) {
     constexpr auto cnt = 0x100;
