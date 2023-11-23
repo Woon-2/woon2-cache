@@ -11,7 +11,6 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
-#include <memory_resource>
 #include <type_traits>
 #include <optional>
 #include <concepts>
@@ -38,32 +37,46 @@ public:
         allocator_type>::const_pointer;
 
 private:
+    struct hasher_impl {
+        constexpr std::size_t operator()(
+            const std::reference_wrapper<const key_type>& key_wrapper
+        ) const {
+            return hasher{}( key_wrapper.get() );
+        }
+    };
+
     using my_type = LRUCache<Key, T, Hash, KeyEqual, TAlloc>;
     using list_type = std::list<value_type, allocator_type>;
     using mapped_iterator
         = std::ranges::iterator_t<list_type>;
     using mapped_const_iterator
         = typename list_type::const_iterator;
-    using map_value_type = std::pair<const key_type,
+    using map_value_type = std::pair<
+        const std::reference_wrapper<const key_type>,
         mapped_iterator
     >;
     using map_allocator_type = TAlloc<map_value_type>;
     using map_type = std::unordered_map<
-        key_type, mapped_iterator, hasher,
-        key_equal, map_allocator_type
+        std::reference_wrapper<const key_type>, mapped_iterator,
+        hasher_impl, key_equal, map_allocator_type
     >;
+    using ref_mapped_proxy = std::optional<
+        std::reference_wrapper<mapped_type>
+    >;
+
 
     class cache_result {
     public:
         cache_result() = default;
 
-        cache_result(const std::optional<
-            std::reference_wrapper<mapped_type>
-        >& data) : data_(data) {}
+        // construct from ref_mapped_proxy to support implicit conversion
+        // of return value of at_impl (which is same as ref_mapped_proxy)
+        // to cache_result.
+        cache_result(const ref_mapped_proxy& data)
+            : data_(data) {}
 
-        cache_result(std::optional<
-            std::reference_wrapper<mapped_type>
-        >&& data) : data_(std::move(data)) {}
+        cache_result(ref_mapped_proxy&& data)
+            : data_(std::move(data)) {}
 
         bool hit() const noexcept {
             return data_.has_value();
@@ -74,11 +87,11 @@ private:
         }
 
         mapped_type& value() {
-            return data_.value();
+            return data_.value().get();
         }
 
         const mapped_type& value() const {
-            return data_.value();
+            return data_.value().get();
         }
 
         mapped_type& operator*() {
@@ -97,11 +110,11 @@ private:
             return &value();
         }
 
-        operator mapped_type& () {
+        operator mapped_type&() {
             return value();
         }
 
-        operator const mapped_type& () {
+        operator const mapped_type&() const {
             return value();
         }
 
@@ -116,7 +129,7 @@ private:
         }
 
     private:
-        std::optional<std::reference_wrapper<mapped_type>> data_;
+        std::optional<ref_mapped_proxy> data_;
     };
 
     template <std::bidirectional_iterator SrcIt>
@@ -245,9 +258,7 @@ private:
         }
 
         reference operator*() const {
-            if (auto captured = base_.captured();
-                captured.has_value()
-            ) {
+            if ( auto captured = base_.captured(); captured.has_value() ) {
                 return *(captured.value());
             }
 
@@ -370,12 +381,16 @@ public:
             : reverse_iterator_base<iterator>(base) {}
 
         template <class OtherIt>
-            requires std::convertible_to<const OtherIt&, reverse_iterator> 
+            requires requires (const OtherIt i) {
+                    {i.base()} -> std::convertible_to<iterator_type>;
+                } 
         reverse_iterator(const OtherIt& other_it)
             : reverse_iterator_base<iterator>( other_it.base() ) {}
 
         template <class OtherIt>
-            requires std::convertible_to<const OtherIt&, reverse_iterator> 
+            requires requires (const OtherIt i) {
+                    {i.base()} -> std::convertible_to<iterator_type>;
+                } 
         reverse_iterator& operator=(const OtherIt& other_it) {
             static_cast<reverse_iterator>(other_it).swap(*this);
         }
@@ -398,12 +413,16 @@ public:
             : reverse_iterator_base<const_iterator>(base) {}
 
         template <class OtherIt>
-            requires std::convertible_to<const OtherIt&, const_reverse_iterator> 
+            requires requires (const OtherIt i) {
+                    {i.base()} -> std::convertible_to<iterator_type>;
+                } 
         const_reverse_iterator(const OtherIt& other_it)
             : reverse_iterator_base<const_iterator>( other_it.base() ) {}
 
         template <class OtherIt>
-            requires std::convertible_to<const OtherIt&, const_reverse_iterator> 
+            requires requires (const OtherIt i) {
+                    {i.base()} -> std::convertible_to<iterator_type>;
+                } 
         const_reverse_iterator& operator=(const OtherIt& other_it) {
             static_cast<const_reverse_iterator>(other_it).swap(*this);
         }
@@ -599,81 +618,89 @@ public:
         return at_impl(key);
     }
 
-    [[maybe_unused]] const cache_result at(
-        const key_type& key
-    ) const {
-        return at_impl(key);
+    [[maybe_unused]] const cache_result at(const key_type& key) const {
+        return const_cast<my_type*>(this)->at(key);
     }
 
     template <class KeyU>
-        requires std::constructible_from<key_type, KeyU>
-            && std::copyable<key_type>
+        requires std::equality_comparable_with<const KeyU&, const key_type&>
+    [[maybe_unused]] cache_result at(const KeyU& key) {
+        return at_impl( std::forward<KeyU>(key) );
+    }
+
+    template <class KeyU>
+        requires std::equality_comparable_with<const KeyU&, const key_type&>
+    [[maybe_unused]] const cache_result at(const KeyU& key) const {
+        return const_cast<my_type*>(this)->at( std::forward<KeyU>(key) );
+    }
+
+    template <class KeyU>
+        requires std::equality_comparable_with<const KeyU&, const key_type&>
+            && std::constructible_from<key_type, KeyU>
             && std::is_default_constructible_v<mapped_type>
     [[maybe_unused]] mapped_type& get(KeyU&& key) {
         return get( std::forward<KeyU>(key), mapped_type() );
     }
 
     template <class KeyU>
-        requires std::constructible_from<key_type, KeyU>
-            && std::copyable<key_type>
+        requires std::equality_comparable_with<const KeyU&, const key_type&>
+            && std::constructible_from<key_type, KeyU>
             && std::is_default_constructible_v<mapped_type>
     [[maybe_unused]] const mapped_type& get(KeyU&& key) const {
-        return const_cast<my_type*>(this)
-            ->get(std::forward<KeyU>(key));
+        return const_cast<my_type*>(this)->get( std::forward<KeyU>(key) );
     }
 
     template <class KeyU, class MappedT>
-        requires std::constructible_from<key_type, KeyU>
+        requires std::equality_comparable_with<const KeyU&, const key_type&>
+            && std::constructible_from<key_type, KeyU>
             && std::constructible_from<mapped_type, MappedT>
-            && std::copyable<key_type>
-    [[maybe_unused]] mapped_type& get( KeyU&& key,
-        MappedT&& newVal
-    ) {
-        if ( auto cache_res = at(key); cache_res.hit() ) {
-            return cache_res.value();
-        }
-
-        do_emplace(std::forward<KeyU>(key),
-            std::forward<MappedT>(newVal)
-        );
+    [[maybe_unused]] mapped_type& get( KeyU&& key, MappedT&& newVal ) {
+        try_emplace( std::forward<KeyU>(key), std::forward<MappedT>(newVal) );
+        // `LRU_list_.front().second`'s performance
+        // is better than `this->begin()->second`,
+        // (since the iterator has many members even involving the list's iterator,
+        // and has to setup more things than LRU_list_'s.)
+        // so use `LRU_list_.front().second`.
+        return LRU_list_.front().second;
     }
 
     template <class KeyU, class MappedT>
-        requires std::constructible_from<key_type, KeyU>
+        requires std::equality_comparable_with<const KeyU&, const key_type&>
+            && std::constructible_from<key_type, KeyU>
             && std::constructible_from<mapped_type, MappedT>
-            && std::copyable<key_type>
     [[maybe_unused]] const mapped_type& get( KeyU&& key,
         MappedT&& newVal
     ) const {
-        return const_cast<my_type*>(this)
-            ->get( std::forward<KeyU>(key),
-                std::forward<MappedT>(newVal)
-            );
+        return const_cast<my_type*>(this)->get(
+            std::forward<KeyU>(key), std::forward<MappedT>(newVal)
+        );
     }
 
     template <class KeyU, class ValGen, class ... Args>
-        requires std::constructible_from<key_type, KeyU>
+        requires std::equality_comparable_with<const KeyU&, const key_type&>
+            && std::constructible_from<key_type, KeyU>
             && std::invocable<ValGen, Args...>
-            && std::copyable<key_type>
+            && (!std::same_as< std::remove_cvref_t<ValGen>, mapped_type >)
+            && std::constructible_from<
+                mapped_type, std::invoke_result_t<ValGen, Args...>
+            >
     [[maybe_unused]] mapped_type& get( KeyU&& key,
         ValGen&& gen, Args&& ... args
     ) {
-        if ( auto cache_res = at(key); cache_res.hit() ) {
-            return cache_res.value();
-        }
-
-        do_generate([key = std::forward<KeyU>(key)]() { 
-            return std::forward<KeyU>(key);
-        }, std::forward<ValGen>(gen), std::forward<Args>(args)...
+        generate( std::forward<KeyU>(key), std::forward<ValGen>(gen),
+            std::forward<Args>(args)...
         );
-
         return LRU_list_.front().second;
     }
 
     template <class KeyU, class ValGen, class ... Args>
-        requires std::constructible_from<key_type, KeyU>
+        requires std::equality_comparable_with<const KeyU&, const key_type&>
+            && std::constructible_from<key_type, KeyU>
             && std::invocable<ValGen, Args...>
-            && std::copyable<key_type>
+            && (!std::same_as< std::remove_cvref_t<ValGen>, mapped_type >)
+            && std::constructible_from<
+                mapped_type, std::invoke_result_t<ValGen, Args...>
+            >
     [[maybe_unused]] const mapped_type& get( KeyU&& key,
         ValGen&& gen, Args&& ... args
     ) const {
@@ -686,35 +713,35 @@ public:
 
     template <class KeyGen, class ValGen, class ... Args>
         requires std::invocable<KeyGen>
+            && (!std::same_as< std::remove_cvref_t<KeyGen>, key_type >)
             && std::constructible_from< key_type, std::invoke_result_t<KeyGen> >
             && std::invocable<ValGen, Args...>
-            && std::constructible_from< mapped_type, std::invoke_result_t<ValGen, Args...> >
-    [[maybe_unused]] mapped_type& kgget(KeyGen&& key_gen,
+            && (!std::same_as< std::remove_cvref_t<ValGen>, mapped_type >)
+            && std::constructible_from<
+                mapped_type, std::invoke_result_t<ValGen, Args...>
+            >
+    [[maybe_unused]] mapped_type& get(KeyGen&& key_gen,
         ValGen&& val_gen, Args&& ... args
     ) {
-        auto key = std::invoke(key_gen);
-
-        if ( auto cache_res = at(key); cache_res.hit() ) {
-            return cache_res.value();
-        }
-
-        do_generate(std::forward<KeyGen>(key_gen),
-            std::forward<ValGen>(val_gen),
+        generate(std::forward<KeyGen>(key_gen), std::forward<ValGen>(val_gen),
             std::forward<Args>(args)...
         );
-
         return LRU_list_.front().second;
     }
 
     template <class KeyGen, class ValGen, class ... Args>
         requires std::invocable<KeyGen>
+            && (!std::same_as< std::remove_cvref_t<KeyGen>, key_type >)
             && std::constructible_from< key_type, std::invoke_result_t<KeyGen> >
             && std::invocable<ValGen, Args...>
-            && std::constructible_from< mapped_type, std::invoke_result_t<ValGen, Args...> >
-    [[maybe_unused]] const mapped_type& kgget(KeyGen&& key_gen,
+            && (!std::same_as< std::remove_cvref_t<ValGen>, mapped_type >)
+            && std::constructible_from<
+                mapped_type, std::invoke_result_t<ValGen, Args...>
+            >
+    [[maybe_unused]] const mapped_type& get(KeyGen&& key_gen,
         ValGen&& val_gen, Args&& ... args
     ) const {
-        return const_cast<my_type*>(this)->kgget(
+        return const_cast<my_type*>(this)->get(
             std::forward<KeyGen>(key_gen),
             std::forward<ValGen>(val_gen),
             std::forward<Args>(args)...
@@ -722,9 +749,13 @@ public:
     }
 
     template <class KeyU, class ValGen, class ... Args>
-        requires std::constructible_from<key_type, KeyU>
+        requires std::equality_comparable_with<const KeyU&, const key_type&>
+            && std::constructible_from<key_type, KeyU>
             && std::invocable<ValGen, Args...>
-            && std::copyable<key_type>
+            && (!std::same_as< std::remove_cvref_t<ValGen>, mapped_type >)
+            && std::constructible_from<
+                mapped_type, std::invoke_result_t<ValGen, Args...>
+            >
     [[maybe_unused]] bool generate( KeyU&& key,
         ValGen&& gen, Args&& ... args
     ) {
@@ -742,10 +773,14 @@ public:
 
     template <class KeyGen, class ValGen, class ... Args>
         requires std::invocable<KeyGen>
+            && (!std::same_as< std::remove_cvref_t<KeyGen>, key_type >)
             && std::constructible_from< key_type, std::invoke_result_t<KeyGen> >
             && std::invocable<ValGen, Args...>
-            && std::constructible_from< mapped_type, std::invoke_result_t<ValGen, Args...> >
-    [[maybe_unused]] bool kggenerate(KeyGen&& key_gen,
+            && (!std::same_as< std::remove_cvref_t<ValGen>, mapped_type >)
+            && std::constructible_from<
+                mapped_type, std::invoke_result_t<ValGen, Args...>
+            >
+    [[maybe_unused]] bool generate(KeyGen&& key_gen,
         ValGen&& val_gen, Args&& ... args
     ) {
         auto key = std::invoke(key_gen);
@@ -763,26 +798,13 @@ public:
     }
 
     [[maybe_unused]] cache_result operator[](const key_type& key)
-        requires std::copyable<key_type> {
+        requires requires (const key_type& k) { get(key); } {
         return get(key);
     }
 
-    [[maybe_unused]] cache_result operator[](key_type&& key)
-        requires std::copyable<key_type> {
-        return get(std::move(key));
-    }
-
-    [[maybe_unused]] const cache_result operator[](
-        const key_type& key
-    ) const requires std::copyable<key_type> {
+    [[maybe_unused]] const cache_result operator[](const key_type& key) const
+        requires requires (const key_type& k) { get(key); } {
         return const_cast<my_type*>(this)->operator[](key);
-    }
-
-    [[maybe_unused]] const cache_result operator[](
-        key_type&& key
-    ) const requires std::copyable<key_type> {
-        return const_cast<my_type*>(this)
-            ->operator[](std::move(key));
     }
 
     size_type size() const noexcept {
@@ -793,41 +815,33 @@ public:
         return cacheline_size() * num_cacheline();
     }
 
-    bool insert(const value_type& value)
-        requires std::copyable<key_type> {
-        return insert(cbegin(), value);
+    template <class PairLike>
+    bool insert(PairLike&& p)
+        requires std::constructible_from<value_type,
+            decltype(p.first), decltype(p.second)
+        > || std::constructible_from<value_type,
+            decltype(std::move(p.first)), decltype(std::move(p.second))
+        > {
+        return insert( cbegin(), std::forward<PairLike>(p) );
     }
 
-    bool insert(value_type&& value)
-        requires std::copyable<key_type> {
-        return insert(cbegin(), std::move(value));
-    }
-
-    bool insert(const_iterator pos, const value_type& value)
-        requires std::copyable<key_type> {
-        if (at(value.first).hit()) {
-            return false;
+    template <class PairLike>
+    bool insert(const_iterator pos, PairLike&& p)
+        requires std::constructible_from<value_type,
+            decltype(p.first), decltype(p.second)
+        > || std::constructible_from<value_type,
+            decltype(std::move(p.first)), decltype(std::move(p.second))
+        > {
+        if constexpr (std::is_lvalue_reference_v<PairLike>) {
+            return try_emplace( pos, p.first, p.second );
         }
-
-        do_insert(pos, value);
-
-        return true;
-    }
-
-    bool insert(const_iterator pos, value_type&& value)
-        requires std::copyable<key_type> {
-        if (at(value.first).hit()) {
-            return false;
+        else {
+            return try_emplace( pos, std::move(p.first), std::move(p.second) );
         }
-
-        do_insert(pos, std::move(value));
-
-        return true;
     }
 
     template <class MappedT>
         requires std::constructible_from<mapped_type, MappedT>
-            && std::copyable<key_type>
     bool insert_or_assign( const key_type& key, 
         MappedT&& mapped_value
     ) {
@@ -838,7 +852,6 @@ public:
 
     template <class MappedT>
         requires std::constructible_from<mapped_type, MappedT>
-            && std::copyable<key_type>
     bool insert_or_assign( key_type&& key,
         MappedT&& mapped_value
     ) {
@@ -848,15 +861,25 @@ public:
     }
 
     template <class KeyU, class ... Args>
-        requires std::constructible_from<key_type, KeyU>
-            && std::copyable<key_type>
+        requires std::equality_comparable_with<const KeyU&, const key_type&>
+            && std::constructible_from<key_type, KeyU>
             && std::constructible_from<mapped_type, Args...>
     bool try_emplace( KeyU&& key, Args&& ... args ) {
+        return try_emplace( cbegin(), std::forward<KeyU>(key),
+            std::forward<Args>(args)...
+        );
+    }
+
+    template <class KeyU, class ... Args>
+        requires std::equality_comparable_with<const KeyU&, const key_type&>
+            && std::constructible_from<key_type, KeyU>
+            && std::constructible_from<mapped_type, Args...>
+    bool try_emplace( const_iterator pos, KeyU&& key, Args&& ... args ) {
         if (at(key).hit()) {
             return false;
         }
 
-        do_emplace(std::forward<KeyU>(key),
+        do_emplace( pos, std::forward<KeyU>(key),
             std::forward<Args>(args)...
         );
 
@@ -866,6 +889,12 @@ public:
     template <class ... Args>
         requires std::constructible_from<value_type, Args...>
     bool emplace(Args&& ... args) {
+        return emplace( cbegin(), std::forward<Args>(args)... );
+    }
+
+    template <class ... Args>
+        requires std::constructible_from<value_type, Args...>
+    bool emplace(const_iterator pos, Args&& ... args) {
         auto tmp = value_type(std::forward<Args>(args)...);
         auto& key = tmp.first;
 
@@ -873,7 +902,7 @@ public:
             return false;
         }
 
-        do_insert(begin(), std::move(tmp));
+        do_insert(pos, std::move(tmp));
 
         return true;
     }
@@ -887,34 +916,28 @@ public:
     }
 
     void adjust() {
-        if (size() > capacity()) {
-            auto num_overflow_cacheline
-                = std::max<size_type>(
-                    static_cast<size_type>(std::ceil(
-                        size() / static_cast<double>(cacheline_size())
-                    )) - num_cacheline(),
-                    0
-                );
-
-            // for poor support of list's erasing range in C++20,
-            // use subrange and its iterators alternatively.
-            auto invalidate_range = std::ranges::subrange{
-                std::prev(LRU_list_.end(), cacheline_size()),
-                LRU_list_.end()
-            };
-
-            std::ranges::for_each(invalidate_range,
-                [this](const auto& elem) {
-                    map_.erase(elem.first);
-                }
-            );
-
-            LRU_list_.erase(invalidate_range.begin(),
-                invalidate_range.end()
-            );
-
-            check_invariant();
+        if (size() <= capacity()) {
+            return;
         }
+
+        auto num_overflow_cacheline = std::max<size_type>(
+            (size() + cacheline_size() - 1) / cacheline_size(), 0
+        );
+
+        // for poor support of list's erasing range in C++20,
+        // use subrange and its iterators alternatively.
+        auto invalidate_range = std::ranges::subrange{
+            std::prev( LRU_list_.end(), cacheline_size() ),
+            LRU_list_.end()
+        };
+
+        std::ranges::for_each(invalidate_range,
+            [this](const auto& elem) { map_.erase(elem.first); }
+        );
+
+        LRU_list_.erase( invalidate_range.begin(), invalidate_range.end() );
+
+        check_invariant();
     }
 
     void clear() {
@@ -924,19 +947,23 @@ public:
     }
 
     iterator find(const key_type& key) {
-        if (!map_.contains(key)) {
-            return end();
-        }
-
-        return iterator(*this, map_.at(key));
+        return find_impl(key);
     }
 
     const_iterator find(const key_type& key) const {
-        if (!map_.contains(key)) {
-            return cend();
-        }
+        return find_impl(key);
+    }
 
-        return const_iterator(*this, map_.at(key));
+    template <class KeyU>
+        requires std::equality_comparable_with<const KeyU&, const key_type&>
+    iterator find(const KeyU& key) {
+        return find_impl(key);
+    }
+
+    template <class KeyU>
+        requires std::equality_comparable_with<const KeyU&, const key_type&>
+    const_iterator find(const KeyU& key) const {
+        return find_impl(key);
     }
 
     allocator_type get_allocator() const noexcept {
@@ -954,6 +981,12 @@ public:
     }
 
     bool contains(const key_type& key) const {
+        return at(key).hit();
+    }
+
+    template <class KeyU>
+        requires std::equality_comparable_with<const KeyU&, const key_type&>
+    bool contains(const KeyU& key) const {
         return at(key).hit();
     }
 
@@ -996,14 +1029,22 @@ public:
     }
 
 private:
-    std::optional<std::reference_wrapper<mapped_type>>
-        at_impl(const key_type& key) const {
+    template <class KeyU>
+    ref_mapped_proxy at_impl(const KeyU& key) const {
         if (!map_.contains(key)) {
             return {};
         }
 
+        // - use std::list<T>::splice to not restore memory but
+        //   just reset nodes' links.
+        // - use std::unordered_map<...>::find to transparently compare
+        //   given arguments with stored keys
+        //   without construction of temporary object.
+        //   std::unordered_map<...>::at receives const key_type&,
+        //   so that it constructs a temporary object
+        //   if the argument's type is not a key_type.
         LRU_list_.splice(
-            LRU_list_.begin(), LRU_list_, map_.at(key)
+            LRU_list_.begin(), LRU_list_, map_.find(key)->second
         );
 
         check_invariant();
@@ -1028,33 +1069,62 @@ private:
 
     template <class ... Args>
         requires std::constructible_from<value_type, Args...> 
-            && std::copyable<key_type>
-    void do_emplace(Args&& ... args) {
-        LRU_list_.emplace_front(std::forward<Args>(args)...);
-        map_.emplace(LRU_list_.front().first, LRU_list_.begin());
+    void do_emplace(const_iterator pos, Args&& ... args) {
+        const auto pos_list = pos.base();
+        const auto it_emplaced = LRU_list_.emplace(
+            pos_list, std::forward<Args>(args)...
+        );
+        map_.emplace(it_emplaced->first, it_emplaced);
 
         adjust();
         check_invariant();
     }
 
-    template <class ValT>
-        requires std::convertible_to<ValT, value_type> 
-            && std::copyable<key_type>
-    void do_insert(const_iterator pos, ValT&& val) {
+    template <class PairLike>
+        requires requires (const_iterator i, PairLike&& p) {
+            do_emplace( i, p.first, p.second );
+        } || requires (const_iterator i, PairLike&& p) {
+            do_emplace( i, std::move(p.first), std::move(p.second) );
+        }
+    void do_insert(const_iterator pos, PairLike&& val) {
         const auto list_it = pos.base();
 
-        LRU_list_.insert(list_it, std::forward<ValT>(val));
-        map_.emplace( std::prev(list_it)->first, LRU_list_.begin() );
+        if constexpr (std::is_lvalue_reference_v<PairLike>) {
+            do_emplace( pos, val.first, val.second );
+        }
+        else {
+            do_emplace( pos, std::move(val.first), std::move(val.second) );
+        }
+    }
 
-        adjust();
-        check_invariant();
+    template <class KeyU, class ValGen, class ... Args>
+        requires std::constructible_from<key_type, KeyU>
+            && std::invocable<ValGen, Args...>
+            && (!std::same_as< std::remove_cvref_t<ValGen>, mapped_type >)
+            && std::constructible_from<
+                mapped_type, std::invoke_result_t<ValGen, Args...>
+            >
+    void do_generate(KeyU&& key, ValGen&& gen, Args&& ... args) {
+        do_generate([&key = std::forward<KeyU>(key)]() mutable {
+                if constexpr ( std::is_lvalue_reference_v<KeyU> ) {
+                    return key;
+                }
+                else {
+                    return std::move(key);
+                }
+            },  std::forward<ValGen>(gen), std::forward<Args>(args)...
+        );
     }
 
     template <class KeyGen, class ValGen, class ... Args>
         requires std::invocable<KeyGen>
+            && (!std::same_as< std::remove_cvref_t<KeyGen>, key_type >)
             && std::constructible_from< key_type, std::invoke_result_t<KeyGen> >
             && std::invocable<ValGen, Args...>
-            && std::constructible_from< mapped_type, std::invoke_result_t<ValGen, Args...> >
+            && (!std::same_as< std::remove_cvref_t<ValGen>, mapped_type >)
+            && std::constructible_from<
+                mapped_type, std::invoke_result_t<ValGen, Args...>
+            >     
     void do_generate(KeyGen&& key_gen,
         ValGen&& val_gen, Args&& ... args
     ) {
@@ -1082,11 +1152,31 @@ private:
             return false;
         }
 
-        do_emplace( std::forward<KeyU>(key),
+        do_emplace( cbegin(), std::forward<KeyU>(key),
             std::forward<MappedT>(mapped_value)
         );
 
         return true;
+    }
+
+    template <class KeyU>
+        requires std::equality_comparable_with<const KeyU&, const key_type&>
+    iterator find_impl(const KeyU& key) {
+        if ( auto found_it = map_.find(key); found_it != map_.end() ) {
+            return iterator(*this, found_it->second);
+        }
+
+        return end();
+    }
+
+    template <class KeyU>
+        requires std::equality_comparable_with<const KeyU&, const key_type&>
+    const_iterator find_impl(const KeyU& key) const {
+        if ( auto found_it = map_.find(key); found_it != map_.end() ) {
+            return const_iterator(*this, found_it->second);
+        }
+
+        return cend();
     }
 
     void reserve_map() {

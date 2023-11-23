@@ -11,6 +11,8 @@
 #include <optional>
 #include <utility>
 #include <vector>
+#include <typeinfo>
+#include <typeindex>
 
 namespace test_values {
 
@@ -20,9 +22,9 @@ template <class T>
 class value_generator {};
 
 template <class KeyT, class MappedT>
-class value_generator< std::pair<const KeyT, MappedT> > {
+class value_generator< std::pair<KeyT, MappedT> > {
 public:
-    using value_type = std::pair<const KeyT, MappedT>;
+    using value_type = std::pair<KeyT, MappedT>;
 
     static value_type gen() {
         return { value_generator<KeyT>::gen(), value_generator<MappedT>::gen() };
@@ -73,7 +75,10 @@ private:    \
 typename value_generator<type>::internal value_generator<type>::data_
 
 __DEFINE_VALUE_GEN(int, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+__DEFINE_VALUE_GEN(std::type_index, typeid(int), typeid(double), typeid(char), typeid(unsigned short), typeid(std::string), typeid(void*));
 __DEFINE_VALUE_GEN(std::unique_ptr<int>, new int(1), new int(2), new int(3), new int(4));
+__DEFINE_VALUE_GEN(std::unique_ptr<std::string>, new std::string("yeah"), new std::string("holy"), new std::string("moly"), new std::string("shit"), new std::string("fuck"));
+__DEFINE_VALUE_GEN(std::shared_ptr<int>, new int(1), new int(2), new int(3), new int(4));
 __DEFINE_VALUE_GEN(std::string, "yeah", "holy", "moly", "shit", "fuck");
 
 #undef __DEFINE_VALUE_GEN

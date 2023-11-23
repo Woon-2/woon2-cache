@@ -1,3 +1,5 @@
+#define LRU_CACHE_CHECK_INVARIANT
+
 #include "gtest/gtest.h"
 #include "LRUCache.hpp"
 #include "random_object.hpp"
@@ -16,12 +18,9 @@ void LRU_test_body(CacheT&& cache) {
         0, cache.size()
     );
 
-    // read random range in copied cache and let n the range's size,
-    // then reading first n elements from the copied cache in reverse order
+    // read random range in cache and let n the range's size,
+    // then reading first n elements from the cache in reverse order
     // will yield equal result with reading from original range.
-
-    // make copy
-    auto copied = cache;
 
     // select range
     auto random_idx_first = dist(re);
@@ -34,28 +33,34 @@ void LRU_test_body(CacheT&& cache) {
     // calculate n
     const auto range_length = random_idx_last - random_idx_first;
 
-    auto it_first = std::next(copied.begin(), random_idx_first);
+    auto it_first = std::next(cache.begin(), random_idx_first);
     const auto it_last = std::next(it_first, range_length);
 
-    // actually read values in the range
+    // read values in the range and store their addresses
+    // Note: since LRU mechanism is implemented by std::list,
+    // all nodes are guaranteed to be not invalidated,
+    // which means the values' addresses are conserved.
+    auto read_values = std::vector<
+        typename std::remove_cvref_t<CacheT>::const_pointer
+    >();
+
     for (; it_first != it_last; ++it_first) {
-        volatile const auto& tmp = *it_first;
+        read_values.push_back( &(*it_first) );
     }
 
-    // test first n elements from copied cache in reverse order
-    // with the original range from original cache.
-    auto src_first = std::next(
-        std::forward<CacheT>(cache).begin(),
-        random_idx_first
-    );
+    // test first n elements from cache in reverse order
+    // with stored original range.
+    auto src_first = read_values.begin();
     const auto src_last = std::next(src_first, range_length);
 
-    auto read_first = copied.make_reverse_iterator(
-        std::next(copied.begin(), range_length)
+    auto read_first = cache.make_reverse_iterator(
+        std::next(cache.begin(), range_length)
     );
 
+
     for (; src_first != src_last; ++src_first, ++read_first) {
-        EXPECT_EQ(*src_first, *read_first);
+        const auto& val = *read_first;
+        EXPECT_EQ(*src_first, &val);
     }
 }
 
@@ -63,32 +68,7 @@ template <class KeyT, class MappedT>
 struct LRUTestInfo {
     using key_type = KeyT;
     using mapped_type = MappedT;
-    using value_type = std::pair<const key_type, mapped_type>;
-
-    // LRUTestInfo() = default;
-
-    // LRUTestInfo(std::size_t cacheline_size,
-    //     std::size_t num_cacheline,
-    //     std::vector<value_type> values
-    // ) : values(values), cacheline_size(cacheline_size),
-    //     num_cacheline(num_cacheline) {}
-
-    // ~LRUTestInfo() = default;
-
-    // LRUTestInfo(const LRUTestInfo& other) noexcept
-    //     : values(std::move( const_cast<LRUTestInfo&>(other).values )),
-    //     cacheline_size(other.cacheline_size),
-    //     num_cacheline(other.num_cacheline) {}
-
-    // LRUTestInfo& operator=(const LRUTestInfo& other) noexcept {
-    //     LRUTestInfo(other).swap(*this);
-    // }
-
-    // void swap(LRUTestInfo& other) noexcept {
-    //     std::swap(values, other.values);
-    //     std::swap(cacheline_size, other.cacheline_size);
-    //     std::swap(num_cacheline, other.num_cacheline);
-    // }
+    using value_type = std::pair<key_type, mapped_type>;
 
     std::vector<value_type> values;
     std::size_t cacheline_size;
@@ -96,9 +76,10 @@ struct LRUTestInfo {
 };
 
 template <class TestInfoT>
-class TLRUTestSuite : public ::testing::TestWithParam<TestInfoT> {
+class TLRUTestSuite : public ::testing::Test {
 public:
     using info_type = TestInfoT;
+    using value_type = typename TestInfoT::value_type;
 private:
 };
 
@@ -140,26 +121,15 @@ void IsLRU_impl(TestInfoT&& test_info) {
         test_info.num_cacheline
     );
 
-    if constexpr ( not std::copyable< typename std::remove_cvref_t<TestInfoT>::key_type > ) {
-        // assume key_type is an unique pointer
-        std::ranges::for_each( std::forward<TestInfoT>(test_info).values,
-            [&cache](const auto& elem) {
-                cache.kggenerate(
-                    [&elem]() {
-                        auto val = *(elem.first);
-                        return std::make_unique<decltype(val)>(val);
-                    },
-                    [&elem]() {
-                        return elem.second;
-                    }
-                );
-            }
+    if constexpr ( std::is_lvalue_reference_v<TestInfoT> ) {
+        std::ranges::for_each( test_info.values,
+            [&cache](const auto& elem) { cache.insert( elem ); }
         );
     }
     else {
-        std::ranges::for_each( std::forward<TestInfoT>(test_info).values,
-            [&cache](auto&& elem) {
-                cache.insert( std::forward<decltype(elem)>(elem) );
+        std::ranges::for_each( std::move(test_info.values),
+            [&cache](auto& elem) {
+                cache.insert( std::move(elem) );
             }
         );
     }
@@ -168,91 +138,28 @@ void IsLRU_impl(TestInfoT&& test_info) {
 }
 
 #define IsLRUBody() \
-    const auto& test_info = GetParam();  \
-    IsLRU_impl(test_info)
+    IsLRU_impl( info_type{  \
+        .values = test_values::gen<value_type>(14u),    \
+        .cacheline_size = 2u,   \
+        .num_cacheline = 0x10u  \
+    } )
 
-TEST_P(LRUTestSuiteBasic, IsLRU) {
+TEST_F(LRUTestSuiteBasic, IsLRU) {
     IsLRUBody();
 }
 
-// TEST_P(LRUTestSuiteKeyNotDefaultConstructible, IsLRU) {
-//     IsLRUBody();
-// }
-
-// TEST_P(LRUTestSuiteValueNotDefaultConstructible, IsLRU) {
-//     IsLRUBody();
-// }
-
-// TEST_P(LRUTestSuiteKeyNotCopyable, IsLRU) {
-//     IsLRUBody();
-// }
-
-// TEST_P(LRUTestSuiteValueNotCopyable, IsLRU) {
-//     IsLRUBody();
-// }
-
-template <class TestInfoT>
-auto make_test_infos(std::size_t num_tests, std::size_t num_values,
-    std::size_t cacheline_size, std::size_t num_cacheline) {
-    using value_type = typename TestInfoT::value_type;
-
-    auto ret = std::vector<TestInfoT>();
-    ret.reserve(num_tests);
-
-    while (num_tests--) {
-        ret.emplace_back(
-            /* .values = */test_values::gen<value_type>(num_values),
-            /* .cacheline_size = */cacheline_size,
-            /* .num_cacheline = */num_cacheline
-        );
-    }
-
-    return ret;
+TEST_F(LRUTestSuiteKeyNotDefaultConstructible, IsLRU) {
+    IsLRUBody();
 }
 
-INSTANTIATE_TEST_SUITE_P(MeenyMinyMoe,
-    LRUTestSuiteBasic,
-    testing::ValuesIn( make_test_infos<
-        LRUTestSuiteBasic::info_type
-    >(1u, 12u, 0x4u, 0x10u) )
-);
+TEST_F(LRUTestSuiteValueNotDefaultConstructible, IsLRU) {
+    IsLRUBody();
+}
 
-TEST(LRUTestSuite, LRUTest) {
-    constexpr auto cnt = 0x100;
-    auto dist_key = std::uniform_int_distribution<>(0, 1000);
-    auto dist_char = std::uniform_int_distribution<>('a', 'z');
-    auto dist_str_size = std::uniform_int_distribution<std::size_t>(
-        1, 64
-    );
-    auto dist_iter = std::uniform_int_distribution<>(40, 100);
-    auto dist_cacheline_size = std::uniform_int_distribution<std::size_t>(
-        1, 20
-    );
-    auto dist_num_cacheline = std::uniform_int_distribution<std::size_t>(
-        1, 0x20
-    );
-    auto dist_cache_size = std::uniform_int_distribution<std::size_t>(
-        0, 0x800
-    );
+TEST_F(LRUTestSuiteKeyNotCopyable, IsLRU) {
+    IsLRUBody();
+}
 
-    for (int i = cnt; i--;) {
-        auto cache = LRUCache<int, std::string>(
-            dist_cacheline_size(re),
-            dist_num_cacheline(re)
-        );
-
-        for (int j = dist_cache_size(re); j--;) {
-            auto key = dist_key(re);
-            auto value = std::string();
-            for (int k = dist_str_size(re); k--;) {
-                value += static_cast<char>( dist_char(re) );
-            }
-
-            cache.try_emplace(std::move(key), std::move(value));
-        }
-
-        for (int l = dist_iter(re); l--;) {
-            LRU_test_body(cache);
-        }
-    }
+TEST_F(LRUTestSuiteValueNotCopyable, IsLRU) {
+    IsLRUBody();
 }
