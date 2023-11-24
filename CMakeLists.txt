@@ -48,6 +48,10 @@ add_library(woon2cache INTERFACE LRUCache.hpp)
 
 target_compile_features(woon2cache INTERFACE cxx_std_20)
 
+target_include_directories(woon2cache INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+add_library(woon2cache::LRUCache ALIAS woon2cache)
+
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     add_subdirectory(test)
 endif()
