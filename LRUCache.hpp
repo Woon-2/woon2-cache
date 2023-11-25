@@ -60,22 +60,20 @@ private:
         std::reference_wrapper<const key_type>, mapped_iterator,
         hasher_impl, key_equal, map_allocator_type
     >;
-    using ref_mapped_proxy = std::optional<
-        std::reference_wrapper<mapped_type>
-    >;
+    using ref_mapped_proxy = std::reference_wrapper<mapped_type>;
 
 
     class cache_result {
     public:
         cache_result() = default;
 
-        // construct from ref_mapped_proxy to support implicit conversion
-        // of return value of at_impl (which is same as ref_mapped_proxy)
+        // construct from std::optional<ref_mapped_proxy> to support implicit conversion
+        // of return value of at_impl (which is same as std::optional<ref_mapped_proxy>)
         // to cache_result.
-        cache_result(const ref_mapped_proxy& data)
+        cache_result(const std::optional<ref_mapped_proxy>& data)
             : data_(data) {}
 
-        cache_result(ref_mapped_proxy&& data)
+        cache_result(std::optional<ref_mapped_proxy>&& data)
             : data_(std::move(data)) {}
 
         bool hit() const noexcept {
@@ -1030,7 +1028,7 @@ public:
 
 private:
     template <class KeyU>
-    ref_mapped_proxy at_impl(const KeyU& key) const {
+    std::optional<ref_mapped_proxy> at_impl(const KeyU& key) const {
         if (!map_.contains(key)) {
             return {};
         }
