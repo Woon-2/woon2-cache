@@ -14,6 +14,7 @@
 #include <type_traits>
 #include <optional>
 #include <concepts>
+#include <compare>
 
 template <class Key, class T, class Hash = std::hash<Key>,
     class KeyEqual = std::equal_to<Key>,
@@ -1024,6 +1025,8 @@ public:
                 return elem_compare_result;
             }
         }
+
+        return std::strong_ordering::equal;
     }
 
 private:
